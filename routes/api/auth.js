@@ -11,6 +11,8 @@ const upload = require("../../middlewares/upload");
 const path = require("path");
 const fs = require("fs/promises");
 const Jimp = require("jimp");
+const { nanoid } = require("nanoid");
+const sendMail = require("../../helpers/sendMail");
 
 const registerUserSchema = Joi.object({
   password: Joi.string().min(6).required(),
@@ -23,6 +25,7 @@ const loginUserSchema = Joi.object({
   password: Joi.string().min(6).required(),
   email: Joi.string().required(),
 });
+const verifyUserSchema = Joi.object({ email: Joi.string().required() });
 
 const { SECRET_KEY } = process.env;
 
@@ -41,13 +44,22 @@ router.post("/signup", async (req, res, next) => {
     }
     const hashPassword = await createHashPassword(password);
     const avatarURL = gravatar.url(email);
+    const varificationToken = nanoid();
 
     const newUser = await User.create({
       email,
       password: hashPassword,
       subscription,
       avatarURL,
+      varificationToken,
     });
+    const mail = {
+      to: email,
+      subject: "Email varification",
+      html: `<a ref="http://localhost:3000/api/users/verify/${varificationToken}">Verify user</a>`,
+    };
+    await sendMail(mail);
+
     res.status(201).json({
       email: newUser.email,
       subscription: newUser.subscription,
@@ -56,6 +68,25 @@ router.post("/signup", async (req, res, next) => {
     next(error);
   }
 });
+
+router.get("/verify/:verificationToken", async (req, res, next) => {
+  try {
+    const { varificationToken } = req.params;
+
+    const user = await User.findOne({ varificationToken });
+    if (!user) {
+      throw createError(404, "User not found");
+    }
+    await User.findByIdAndUpdate(user._id, {
+      verify: true,
+      verificationToken: "",
+    });
+    res.json({ message: "Verification successful" });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post("/login", async (req, res, next) => {
   try {
     const { error } = loginUserSchema.validate(req.body);
@@ -70,6 +101,9 @@ router.post("/login", async (req, res, next) => {
     }
     if (!isValidPAssword) {
       throw createError(401, "Email or password is wrong");
+    }
+    if (!user.varificationToken) {
+      throw createError(401, "User not verify");
     }
     const payload = {
       id: user._id,
@@ -134,5 +168,32 @@ router.patch(
     }
   }
 );
+
+router.post("/verify", async (req, res, next) => {
+  try {
+    const { error } = verifyUserSchema.validate(req.body);
+    if (error) {
+      throw createError(400, error.message);
+    }
+    const { email } = req.body;
+    const user = await User.findOne({ email });
+    if (!user) {
+      throw createError(404, "User not found");
+    }
+    if (user.verify) {
+      throw createError(400, "Verification has already been passed");
+    }
+    const mail = {
+      to: email,
+      subject: "Email varification",
+      html: `<a ref="http://localhost:3000/api/users/verify/${user.varificationToken}">Verify user</a>`,
+    };
+
+    await sendMail(mail);
+    res.json({ message: " Verification email sent" });
+  } catch (error) {
+    next(error);
+  }
+});
 
 module.exports = router;
